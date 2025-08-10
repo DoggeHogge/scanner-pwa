@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kameratest</title>
+</head>
+<body>
+  <h1>Kameratest</h1>
+  <video id="video" width="300" height="400" autoplay playsinline></video>
+  <p id="status">Försöker starta kameran...</p>
+
+  <script>
+    const video = document.getElementById('video');
+    const status = document.getElementById('status');
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        video.srcObject = stream;
+        status.textContent = "Kameran är igång!";
+      } catch (e) {
+        status.textContent = "Kunde inte starta kameran: " + e.message;
+      }
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
