@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Amazon-liknande Scanner App</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f0f0f5; margin: 0; padding: 1rem; }
+  button { margin: 0.5rem 0; padding: 0.6rem 1.2rem; font-size: 1rem; }
+  #video { width: 100%; max-width: 400px; border: 1px solid #ccc; border-radius: 8px; }
+  #log { margin-top: 1rem; white-space: pre-wrap; font-family: monospace; }
+</style>
+</head>
+<body>
+
+<h1>Amazon-liknande Scanner App</h1>
+
+<button id="start-scan">Starta kamera & skanna</button>
+<button id="stop-scan" disabled>Stoppa kamera</button>
+
+<video id="video" muted playsinline></video>
+
+<div id="log"></div>
+
+<script src="https://unpkg.com/@zxing/library@latest"></script>
+<script>
+  const codeReader = new ZXing.BrowserMultiFormatReader();
+  const video = document.getElementById('video');
+  const log = document.getElementById('log');
+  let stream;
+
+  document.getElementById('start-scan').addEventListener('click', async () => {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      video.srcObject = stream;
+      video.play();
+
+      codeReader.decodeFromVideoDevice(null, video, (result, err) => {
+        if (result) {
+          log.textContent += `Skannad kod: ${result.text}\n`;
+          // Ljud & vibration
+          const ctx = new AudioContext();
+          const o = ctx.createOscillator();
+          o.frequency.value = 440;
+          o.connect(ctx.destination);
+          o.start();
+          setTimeout(() => {
+            o.stop();
+            ctx.close();
+          }, 100);
+          if (navigator.vibrate) navigator.vibrate(100);
+        }
+        if (err && !(err.name === 'NotFoundException')) {
+          console.error(err);
+        }
+      });
+
+      document.getElementById('start-scan').disabled = true;
+      document.getElementById('stop-scan').disabled = false;
+    } catch(e) {
+      alert('Kunde inte starta kameran: ' + e);
+    }
+  });
+
+  document.getElementById('stop-scan').addEventListener('click', () => {
+    codeReader.reset();
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      video.srcObject = null;
+    }
+    document.getElementById('start-scan').disabled = false;
+    document.getElementById('stop-scan').disabled = true;
+  });
+</script>
+
+</body>
+</html>
