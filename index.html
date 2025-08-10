@@ -3,78 +3,206 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Amazon-liknande Scanner App</title>
+<title>Amazon-liknande Scanner</title>
 <style>
-  body { font-family: Arial, sans-serif; background: #f0f0f5; margin: 0; padding: 1rem; }
-  button { margin: 0.5rem 0; padding: 0.6rem 1.2rem; font-size: 1rem; }
-  #video { width: 100%; max-width: 400px; border: 1px solid #ccc; border-radius: 8px; }
-  #log { margin-top: 1rem; white-space: pre-wrap; font-family: monospace; }
+  body { font-family: sans-serif; margin: 1rem; background: #f9fafb; color: #111; }
+  #video { width: 100%; max-width: 400px; border: 2px solid #333; border-radius: 8px; }
+  button { padding: 0.5rem 1rem; font-size: 1rem; margin: 0.3rem; border-radius: 6px; border: none; cursor: pointer; }
+  button:disabled { background: #ccc; cursor: not-allowed; }
+  #log { margin-top: 1rem; max-height: 150px; overflow-y: auto; background: #eee; padding: 0.5rem; border-radius: 6px; }
+  #stops { margin-top: 1rem; }
+  .stop { background: white; padding: 0.5rem; margin-bottom: 0.5rem; border-radius: 6px; box-shadow: 0 0 3px #ccc; }
+  .barcode { font-family: monospace; background: #ddd; padding: 2px 6px; margin-right: 4px; border-radius: 4px; display: inline-block; }
 </style>
 </head>
 <body>
 
-<h1>Amazon-liknande Scanner App</h1>
+<h1>Amazon-liknande Scanner</h1>
 
-<button id="start-scan">Starta kamera & skanna</button>
-<button id="stop-scan" disabled>Stoppa kamera</button>
+<video id="video" muted playsinline></video><br />
 
-<video id="video" muted playsinline></video>
+<button id="btnStartLoad">Börja läsa in paket (start)</button>
+<button id="btnStartStop" disabled>Börja skanna stopp</button>
+<button id="btnFinishStop" disabled>Avsluta stopp</button>
+<button id="btnFinishRoute" disabled>Avsluta rutt</button>
+
+<div id="status" style="margin-top:1rem; font-weight:bold;"></div>
 
 <div id="log"></div>
 
+<div id="stops">
+  <h2>Stopp:</h2>
+</div>
+
 <script src="https://unpkg.com/@zxing/library@latest"></script>
 <script>
-  const codeReader = new ZXing.BrowserMultiFormatReader();
-  const video = document.getElementById('video');
-  const log = document.getElementById('log');
-  let stream;
+(async () => {
+  const codeReader = new ZXing.BrowserMultiFormatContinuousReader();
+  const videoElement = document.getElementById('video');
 
-  document.getElementById('start-scan').addEventListener('click', async () => {
+  let mode = 'idle'; // idle, loadingPackages, scanningStop, finished
+  let loadedPackages = []; // alla paketkoder i början
+  let stops = []; // [{barcodes: []}]
+  let currentStopIndex = null;
+
+  const btnStartLoad = document.getElementById('btnStartLoad');
+  const btnStartStop = document.getElementById('btnStartStop');
+  const btnFinishStop = document.getElementById('btnFinishStop');
+  const btnFinishRoute = document.getElementById('btnFinishRoute');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+  const stopsEl = document.getElementById('stops');
+
+  // Feedback
+  function playBeep() {
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
-      video.srcObject = stream;
-      video.play();
-
-      codeReader.decodeFromVideoDevice(null, video, (result, err) => {
-        if (result) {
-          log.textContent += `Skannad kod: ${result.text}\n`;
-          // Ljud & vibration
-          const ctx = new AudioContext();
-          const o = ctx.createOscillator();
-          o.frequency.value = 440;
-          o.connect(ctx.destination);
-          o.start();
-          setTimeout(() => {
-            o.stop();
-            ctx.close();
-          }, 100);
-          if (navigator.vibrate) navigator.vibrate(100);
-        }
-        if (err && !(err.name === 'NotFoundException')) {
-          console.error(err);
-        }
-      });
-
-      document.getElementById('start-scan').disabled = true;
-      document.getElementById('stop-scan').disabled = false;
-    } catch(e) {
-      alert('Kunde inte starta kameran: ' + e);
+      const ctx = new AudioContext();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'sine';
+      o.frequency.value = 880;
+      g.gain.value = 0.02;
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start();
+      setTimeout(() => o.stop(), 100);
+    } catch {
+      if (navigator.vibrate) navigator.vibrate(100);
     }
-  });
-
-  document.getElementById('stop-scan').addEventListener('click', () => {
-    codeReader.reset();
-    if (stream) {
-      stream.getTracks().forEach(track => track.stop());
-      video.srcObject = null;
-    }
-    document.getElementById('start-scan').disabled = false;
-    document.getElementById('stop-scan').disabled = true;
- if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('service-worker.js')
-      .then(() => console.log('Service Worker registrerad!'))
-      .catch(console.error);
   }
+
+  function log(msg) {
+    const d = new Date().toLocaleTimeString();
+    logEl.innerHTML = `<div>[${d}] ${msg}</div>` + logEl.innerHTML;
+  }
+
+  function updateStatus() {
+    if (mode === 'idle') statusEl.textContent = 'Väntar på start.';
+    else if (mode === 'loadingPackages') statusEl.textContent = `Inlästa paket: ${loadedPackages.length}`;
+    else if (mode === 'scanningStop') {
+      const stop = stops[currentStopIndex];
+      statusEl.textContent = `Skannar stopp #${currentStopIndex + 1}: ${stop.barcodes.length} streckkoder`;
+    } else if (mode === 'finished') statusEl.textContent = `Rutt klar med ${stops.length} stopp.`;
+  }
+
+  function renderStops() {
+    stopsEl.innerHTML = '<h2>Stopp:</h2>';
+    stops.forEach((stop, i) => {
+      const div = document.createElement('div');
+      div.className = 'stop';
+      div.innerHTML = `<strong>Stopp #${i + 1}</strong><br>` + stop.barcodes.map(b => `<span class="barcode">${b}</span>`).join('');
+      stopsEl.appendChild(div);
+    });
+  }
+
+  // Scan callback beroende på mode
+  function onScan(result) {
+    const code = result.text;
+    if (mode === 'loadingPackages') {
+      if (!loadedPackages.includes(code)) {
+        loadedPackages.push(code);
+        playBeep();
+        log(`Paket inläst: ${code}`);
+        updateStatus();
+        btnStartStop.disabled = false;
+      } else {
+        log(`Redan inläst paket: ${code}`);
+      }
+    } else if (mode === 'scanningStop') {
+      const stop = stops[currentStopIndex];
+      if (stop.barcodes.includes(code)) {
+        log(`Redan skannad på stopp: ${code}`);
+        return;
+      }
+      if (stop.barcodes.length >= 3) {
+        log('Max 3 streckkoder per stopp');
+        return;
+      }
+      stop.barcodes.push(code);
+      playBeep();
+      log(`Streckkod skannad på stopp #${currentStopIndex + 1}: ${code}`);
+      updateStatus();
+
+      // Om alla paket finns med i stops så kan vi avsluta rutten automatiskt
+      const delivered = stops.flatMap(s => s.barcodes);
+      if (loadedPackages.every(p => delivered.includes(p))) {
+        log('Alla paket levererade! Avslutar rutt...');
+        finishRoute();
+      }
+    }
+  }
+
+  async function startCamera() {
+    try {
+      await codeReader.decodeFromVideoDevice(undefined, videoElement, onScan);
+      log('Kamera startad. Skanna koder...');
+    } catch (e) {
+      log('Kunde inte starta kameran: ' + e);
+    }
+  }
+
+  function stopCamera() {
+    codeReader.reset();
+    log('Kamera stoppad.');
+  }
+
+  function startLoadPackages() {
+    mode = 'loadingPackages';
+    loadedPackages = [];
+    stops = [];
+    currentStopIndex = null;
+    btnStartLoad.disabled = true;
+    btnStartStop.disabled = true;
+    btnFinishStop.disabled = true;
+    btnFinishRoute.disabled = true;
+    startCamera();
+    updateStatus();
+    renderStops();
+  }
+
+  function startScanStop() {
+    if (loadedPackages.length === 0) {
+      alert('Skanna in paket först!');
+      return;
+    }
+    mode = 'scanningStop';
+    stops.push({ barcodes: [] });
+    currentStopIndex = stops.length -1;
+    btnStartLoad.disabled = true;
+    btnStartStop.disabled = true;
+    btnFinishStop.disabled = false;
+    btnFinishRoute.disabled = false;
+    updateStatus();
+    renderStops();
+  }
+
+  function finishScanStop() {
+    stopCamera();
+    mode = 'idle';
+    btnStartLoad.disabled = false;
+    btnStartStop.disabled = false;
+    btnFinishStop.disabled = true;
+    updateStatus();
+  }
+
+  function finishRoute() {
+    stopCamera();
+    mode = 'finished';
+    btnStartLoad.disabled = true;
+    btnStartStop.disabled = true;
+    btnFinishStop.disabled = true;
+    btnFinishRoute.disabled = true;
+    updateStatus();
+    alert('Rutt avslutad! Alla paket levererade.');
+  }
+
+  btnStartLoad.onclick = startLoadPackages;
+  btnStartStop.onclick = startScanStop;
+  btnFinishStop.onclick = finishScanStop;
+  btnFinishRoute.onclick = finishRoute;
+
+  updateStatus();
+})();
 </script>
 
 </body>
